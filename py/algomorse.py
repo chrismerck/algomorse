@@ -84,7 +84,8 @@ class Decoder(object):
     self.Tdit = 60.0 # ms
     self.dah_scale = 3.0
     self.Tdit_alpha = 0.5
-    self.elems = []
+    self.elems = ""
+    self.last_t_up = 0
 
   def input_block(self,block):
     # stuff previous block behind this one
@@ -131,18 +132,35 @@ class Decoder(object):
 
   def decode_machine(self):
     decimated_samprate = samprate/10.0
-    """for i in range(self.next_evt,len(self.key_evts)):
-      e = self.key_evts
-      dur_ms = (e[1] - e[0])/decimated_samprate*1000
-      if dur_ms < self.Tdit * (1+self.dah_scale):
+    for i in range(self.next_evt,len(self.key_evts)):
+      e = self.key_evts[i]
+      dur_ms = (e[1] - e[0])*1000.0
+      gap_ms = (e[0] - self.last_t_up)*1000.0
+      self.last_t_up = e[1]
+      # determine element/letter/word spacing
+      if gap_ms < (self.Tdit * (1 + self.dah_scale))/2.0:
+        # element space
+        pass
+      elif gap_ms < (self.Tdit * (5.5 + 1.5*self.dah_scale))/2.0:
+        # letter space
+        self.elems += ' '
+      else:
+        # word space
+        self.elems += '  '
+
+      # determine dit or dah
+      if dur_ms < self.Tdit * (1+self.dah_scale)/2.0:
         # recognized a dit
-        self.Tdit = (1-alpha)*self.Tdit + alpha*dur_ms
-        self.elems.append('.')
+        print "DIT dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
+        self.Tdit = (1-self.Tdit_alpha)*self.Tdit + self.Tdit_alpha*dur_ms
+        self.elems += '.'
       else:
         # recognized a dah
-        self.dah_scale = (1-alpha)*self.dah_scale + alpha*(dur_ms/self.Tdit)
-        self.Tdit = (1-alpha)*self.Tdit + alpha*(dur_ms/self.dah_scale)
-        self.elems.append('-')"""
+        print "DAH dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
+        self.dah_scale = (1-self.Tdit_alpha)*self.dah_scale + self.Tdit_alpha*(dur_ms/self.Tdit)
+        self.Tdit = (1-self.Tdit_alpha)*self.Tdit + self.Tdit_alpha*(dur_ms/self.dah_scale)
+        self.elems += '-'
+    self.next_evt = len(self.key_evts)
 
 
 class Algomorse(object):
@@ -288,13 +306,15 @@ if __name__ == "__main__":
     block = block_u16_to_float(block)
     am.input_block(block)
     block_i += 1
-    if block_i > 30:
-      break
+    if block_i > 100:
+      pass #break
 
   decoders = am.old_decoders + am.decoders
   decoders.sort() # sort by increasing frequency
 
   fig,axs = plt.subplots(len(decoders),sharex=True)
+  if len(decoders) == 1:
+    axs = [axs]
   for i in range(len(decoders)):
     freq,decoder = decoders[i]
     print decoder.elems
