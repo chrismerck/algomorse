@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 # We load BLOCKSIZE samples at once.
 
 BLOCKSIZE = 512
-FFTSIZE = 512
+FFTSIZE = 8192
 
 # We work in floats, initially scaled [-1.0,+1.0],
 #  to avoid fixed-point complications.
@@ -76,8 +76,13 @@ if __name__ == "__main__":
   print data
 
   fig,ax = plt.subplots()
-  ax.imshow(data)
+  for i in range(len(data)):
+    ax.plot(data[i])
   plt.show()
+
+  """fig,ax = plt.subplots()
+  ax.imshow(data)
+  plt.show()"""
 
   print "EOF"
 
