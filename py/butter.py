@@ -22,12 +22,12 @@ if __name__ == "__main__":
     # Sample rate and desired cutoff frequencies (in Hz).
     fs = 5000.0
     lowcut = 500.0
-    highcut = 1250.0
+    highcut = 600.0
 
     # Plot the frequency response for a few different orders.
     plt.figure(1)
     plt.clf()
-    for order in [3, 6, 9]:
+    for order in [3]:
         b, a = butter_bandpass(lowcut, highcut, fs, order=order)
         w, h = freqz(b, a, worN=2000)
         plt.plot((fs * 0.5 / np.pi) * w, abs(h), label="order = %d" % order)
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     plt.clf()
     plt.plot(t, x, label='Noisy signal')
 
-    y = butter_bandpass_filter(x, lowcut, highcut, fs, order=6)
+    y = butter_bandpass_filter(x, lowcut, highcut, fs, order=3)
     plt.plot(t, y, label='Filtered signal (%g Hz)' % f0)
     plt.xlabel('time (seconds)')
     plt.hlines([-a, a], 0, T, linestyles='--')
