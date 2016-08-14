@@ -34,6 +34,59 @@ ELEM_STAT_N = 5 # minimum elements needed for statistics
 # block = [ -.02, -.01, +.03, +.23, +.20, ... ]
 #
 
+morse = {
+  '.-':'a',
+  '-...':'b',
+  '-.-.':'c',
+  '-..':'d',
+  '.':'e',
+  '..-.':'f',
+  '--.':'g',
+  '....':'h',
+  '..':'i',
+  '.---':'j',
+  '-.-':'k',
+  '.-..':'l',
+  '--':'m',
+  '-.':'n',
+  '---':'o',
+  '.--.':'p',
+  '--.-':'q',
+  '.-.':'r',
+  '...':'s',
+  '-':'t',
+  '..-':'u',
+  '...-':'v',
+  '.--':'w',
+  '-..-':'x',
+  '-.--':'y',
+  '--..':'z',
+  '.----':'1',
+  '..---':'2',
+  '...--':'3',
+  '....-':'4',
+  '.....':'5',
+  '-....':'6',
+  '--...':'7',
+  '---..':'8',
+  '----.':'9',
+  '-----':'0',
+  '.-.-.-':'.',
+  '--..--':',',
+  '---...':':',
+  '..--..':'?',
+  '.----.':"'",
+  '-..-.':'/',
+  '.-.-.':'<AR>',
+  '-.--.':'<KN>',
+  '-...-.-':'<BK>',
+  '.'*8:'<HH>',
+  '...-.-':'<SK>',
+  '...-.-':'<SK>',
+  '...---...':'<SOS>',
+}
+
+
 def fits2hz(fits):
   # input in "fits" i.e. index in power spectrum
   # output in Hz
@@ -85,6 +138,7 @@ class Decoder(object):
     self.dah_scale = 3.0
     self.Tdit_alpha = 0.5
     self.elems = ""
+    self.text = ""
     self.last_t_up = 0
 
   def input_block(self,block):
@@ -138,15 +192,28 @@ class Decoder(object):
       gap_ms = (e[0] - self.last_t_up)*1000.0
       self.last_t_up = e[1]
       # determine element/letter/word spacing
+      eol = False
+      eow = False
       if gap_ms < (self.Tdit * (1 + self.dah_scale))/2.0:
         # element space
         pass
       elif gap_ms < (self.Tdit * (5.5 + 1.5*self.dah_scale))/2.0:
         # letter space
-        self.elems += ' '
+        eol = True
       else:
         # word space
-        self.elems += '  '
+        eol = True
+        eow = True
+      if eol:
+        if not self.elems in morse:
+          # unknown letter (probably noise)
+          print "ERROR: unknown letter: ",self.elems
+          self.text += '_'
+        else:
+          self.text += morse[self.elems]
+        self.elems = ''
+      if eow:
+        self.text += ' '
 
       # determine dit or dah
       if dur_ms < self.Tdit * (1+self.dah_scale)/2.0:
@@ -317,7 +384,7 @@ if __name__ == "__main__":
     axs = [axs]
   for i in range(len(decoders)):
     freq,decoder = decoders[i]
-    print decoder.elems
+    print decoder.text
     y = np.concatenate(decoder.ys)
     axs[i].plot(np.arange(len(y))/(samprate/10.0), y)
     avgy = np.mean(y)
