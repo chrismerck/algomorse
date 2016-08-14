@@ -17,10 +17,15 @@ ALLOWED_DRIFT = 100
 DECODER_TIMEOUT_S = 2
 
 # Amount of Smoothing to Apply before Element Detection
-# do not set higher than dit length
-#  where dit length in ms is T = 1200 / WPM 
-SMOOTHING_MS = 10 
-DECODER_AGC_TIME_MS = 300
+RECTIFY_HZ = 40 
+# adjustment for fading
+THRESHOLD_AVG_HZ = 1.0
+MIN_THRESH = 0.01 # unknown units
+MIN_DIT_MS = 20
+MIN_DAH_SCALE = 2
+MAX_DAH_SCALE = 5
+
+ELEM_STAT_N = 5 # minimum elements needed for statistics
 
 # We work in floats, initially scaled [-1.0,+1.0],
 #  to avoid fixed-point complications.
@@ -51,14 +56,16 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = lfilter(b, a, data)
     return y
 
-def exp_avg(a,alpha):
+def exp_avg(a,alpha,x0=0):
   rv = np.zeros(len(a))
-  x = 0
+  x = x0
   for i in range(len(a)):
     x = (1-alpha) * x + alpha*a[i]
     rv[i] = x
   return rv
 
+KEY_UP = 0
+KEY_DOWN = 1
 class Decoder(object):
   def __init__(self,freq):
     self.freq = freq
@@ -66,9 +73,20 @@ class Decoder(object):
     self.ys = []
     self.ys2 = []
     self.age = 0
+    self.timer = 0
+    self.thresh = 0
+    self.hist = 0.5 # as fraction of thresh
+    self.key_evts = []
+    self.key_down_time = 0
+    self.key_up_time = 0
+    self.state = KEY_UP
+    self.next_evt = 0 # next event to be decoded
+    self.Tdit = 60.0 # ms
+    self.dah_scale = 3.0
+    self.Tdit_alpha = 0.5
+    self.elems = []
 
   def input_block(self,block):
-    self.age += BLOCKSIZE/float(samprate)
     # stuff previous block behind this one
     #  to simulate a continuous filter
     x = np.concatenate([self.prev_block,block])
@@ -77,18 +95,55 @@ class Decoder(object):
     highcut = self.freq + CW_FILTER/2
     y = butter_bandpass_filter(x, lowcut, highcut, FFTSIZE, order=3)
     # rectify and smooth signal
-    alpha = 1-np.exp(-2*np.pi*60/float(samprate))
+    alpha = 1-np.exp(-2*np.pi*RECTIFY_HZ/float(samprate))
     y = exp_avg(np.abs(y),alpha)
+    maxy = np.max(y)
     # decimate signal to 1/10 sample-rate
     y = y[::10]
-    y2 = []
-    self.ys.append(y[len(y)/2:])
-    self.ys2.append(y2[len(y2)/2:])
+    # remove unused first half (prev block)
+    y = y[len(y)/2:]
+    decimated_samprate = samprate/10.0
+    alpha = 1-np.exp(-2*np.pi*THRESHOLD_AVG_HZ/float(decimated_samprate))
+    # detect elements
+    for i in range(len(y)):
+      # threshold is slow exponential average
+      self.thresh = (1-alpha) * self.thresh + alpha * y[i]
+      self.thresh = max(MIN_THRESH, self.thresh)
+      if self.state == KEY_UP:
+        if y[i] > self.thresh:
+          self.key_down_time = self.age + i/float(decimated_samprate)
+          self.state = KEY_DOWN
+      elif self.state == KEY_DOWN:
+        if y[i] < self.thresh * self.hist:
+          self.key_up_time = self.age + i/float(decimated_samprate)
+          self.state = KEY_UP
+          self.key_evts.append((self.key_down_time,self.key_up_time))
+          self.decode_machine()
+          #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
+    self.age += BLOCKSIZE/float(samprate)
+    self.timer += BLOCKSIZE/float(samprate)
+    self.ys.append(y)
     self.prev_block = block
 
   def update_freq(self,freq):
-    self.age = 0
+    self.timer = 0
     self.freq = freq
+
+  def decode_machine(self):
+    decimated_samprate = samprate/10.0
+    """for i in range(self.next_evt,len(self.key_evts)):
+      e = self.key_evts
+      dur_ms = (e[1] - e[0])/decimated_samprate*1000
+      if dur_ms < self.Tdit * (1+self.dah_scale):
+        # recognized a dit
+        self.Tdit = (1-alpha)*self.Tdit + alpha*dur_ms
+        self.elems.append('.')
+      else:
+        # recognized a dah
+        self.dah_scale = (1-alpha)*self.dah_scale + alpha*(dur_ms/self.Tdit)
+        self.Tdit = (1-alpha)*self.Tdit + alpha*(dur_ms/self.dah_scale)
+        self.elems.append('-')"""
+
 
 class Algomorse(object):
   def __init__(self):
@@ -144,7 +199,7 @@ class Algomorse(object):
         self.decoders.append((peak,decoder))
       surviving_decoders = []
       for (freq,decoder) in self.decoders:
-        if decoder.age < DECODER_TIMEOUT_S:
+        if decoder.timer < DECODER_TIMEOUT_S:
           surviving_decoders.append((freq,decoder))
         else:
           # for now we keep the old decoders
@@ -242,8 +297,13 @@ if __name__ == "__main__":
   fig,axs = plt.subplots(len(decoders),sharex=True)
   for i in range(len(decoders)):
     freq,decoder = decoders[i]
-    axs[i].plot(np.concatenate(decoder.ys))
-    axs[i].plot(np.concatenate(decoder.ys2))
+    print decoder.elems
+    y = np.concatenate(decoder.ys)
+    axs[i].plot(np.arange(len(y))/(samprate/10.0), y)
+    avgy = np.mean(y)
+    for j in range(len(decoder.key_evts)):
+      key_evt = decoder.key_evts[j]
+      axs[i].plot([key_evt[0],key_evt[1]],[avgy/1.5,avgy*1.5],'k-',lw=3)
   plt.show()
 
   """fig,ax = plt.subplots()
