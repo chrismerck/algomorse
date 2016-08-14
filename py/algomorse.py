@@ -43,7 +43,20 @@ class Algomorse(object):
 def block_u16_to_float(block):
   return np.array(block)/(float(2**15))
 
+def median_filter(a,n):
+  # a is array of floats
+  # n is window size (odd integer)
+  rv = np.zeros(len(a))
+  hn = (n-1)/2
+  for i in range(len(a)):
+    mini = max(0,i-hn)
+    maxi = min(len(a)-1,i+hn)
+    med = np.median(a[mini:maxi+1])
+    rv[i] = med
+  return rv
+
 if __name__ == "__main__":
+
   infilename = "../websdr_recording_start_2016-08-14T11-24-45Z_14034.7kHz.wav"
 
   inwave = wave.open(infilename,'r')
@@ -76,8 +89,11 @@ if __name__ == "__main__":
   print data
 
   fig,ax = plt.subplots()
-  for i in range(len(data)):
-    ax.plot(data[i])
+  #for i in range(len(data)):
+  #  ax.plot(data[i])
+  #
+  # testing 51 Hz median filter
+  ax.plot(median_filter(data[5],51))
   plt.show()
 
   """fig,ax = plt.subplots()
