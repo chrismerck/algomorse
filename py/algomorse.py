@@ -11,7 +11,7 @@ from scipy.signal import butter, lfilter
 BLOCKSIZE = 512
 FFTSIZE = 8192
 SPECTRAL_MEDIAN_FILTER = 51
-PROMINENCE_THRESH = 25 # in dB
+PROMINENCE_THRESH = 20 # in dB
 CW_FILTER = 200 # filter width
 ALLOWED_DRIFT = 100
 DECODER_TIMEOUT_S = 2
@@ -87,7 +87,7 @@ morse = {
 }
 
 
-def fits2hz(fits):
+def fits2hz(fits,samprate):
   # input in "fits" i.e. index in power spectrum
   # output in Hz
   return int(round(fits*samprate/float(FFTSIZE)))
@@ -120,7 +120,8 @@ def exp_avg(a,alpha,x0=0):
 KEY_UP = 0
 KEY_DOWN = 1
 class Decoder(object):
-  def __init__(self,freq):
+  def __init__(self,freq,samprate):
+    self.samprate = samprate
     self.freq = freq
     self.prev_block = np.zeros(BLOCKSIZE)
     self.ys = []
@@ -150,14 +151,14 @@ class Decoder(object):
     highcut = self.freq + CW_FILTER/2
     y = butter_bandpass_filter(x, lowcut, highcut, FFTSIZE, order=3)
     # rectify and smooth signal
-    alpha = 1-np.exp(-2*np.pi*RECTIFY_HZ/float(samprate))
+    alpha = 1-np.exp(-2*np.pi*RECTIFY_HZ/float(self.samprate))
     y = exp_avg(np.abs(y),alpha)
     maxy = np.max(y)
     # decimate signal to 1/10 sample-rate
     y = y[::10]
     # remove unused first half (prev block)
     y = y[len(y)/2:]
-    decimated_samprate = samprate/10.0
+    decimated_samprate = self.samprate/10.0
     alpha = 1-np.exp(-2*np.pi*THRESHOLD_AVG_HZ/float(decimated_samprate))
     # detect elements
     for i in range(len(y)):
@@ -175,9 +176,9 @@ class Decoder(object):
           self.key_evts.append((self.key_down_time,self.key_up_time))
           self.decode_machine()
           #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
-    self.age += BLOCKSIZE/float(samprate)
-    self.timer += BLOCKSIZE/float(samprate)
-    self.ys.append(y)
+    self.age += BLOCKSIZE/float(self.samprate)
+    self.timer += BLOCKSIZE/float(self.samprate)
+    #self.ys.append(y)
     self.prev_block = block
 
   def update_freq(self,freq):
@@ -185,7 +186,7 @@ class Decoder(object):
     self.freq = freq
 
   def decode_machine(self):
-    decimated_samprate = samprate/10.0
+    decimated_samprate = self.samprate/10.0
     for i in range(self.next_evt,len(self.key_evts)):
       e = self.key_evts[i]
       dur_ms = (e[1] - e[0])*1000.0
@@ -197,7 +198,7 @@ class Decoder(object):
       if gap_ms < (self.Tdit * (1 + self.dah_scale))/2.0:
         # element space
         pass
-      elif gap_ms < (self.Tdit * (5.5 + 1.5*self.dah_scale))/2.0:
+      elif gap_ms < (self.Tdit * (4 + 1*self.dah_scale))/2.0:
         # letter space
         eol = True
       else:
@@ -207,23 +208,24 @@ class Decoder(object):
       if eol:
         if not self.elems in morse:
           # unknown letter (probably noise)
-          print "ERROR: unknown letter: ",self.elems
+          #print "ERROR: unknown letter: ",self.elems
           self.text += '_'
         else:
           self.text += morse[self.elems]
         self.elems = ''
       if eow:
         self.text += ' '
+        print "[%d] %s"%(fits2hz(self.freq,self.samprate),self.text)
 
       # determine dit or dah
       if dur_ms < self.Tdit * (1+self.dah_scale)/2.0:
         # recognized a dit
-        print "DIT dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
+        #print "DIT dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
         self.Tdit = (1-self.Tdit_alpha)*self.Tdit + self.Tdit_alpha*dur_ms
         self.elems += '.'
       else:
         # recognized a dah
-        print "DAH dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
+        #print "DAH dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
         self.dah_scale = (1-self.Tdit_alpha)*self.dah_scale + self.Tdit_alpha*(dur_ms/self.Tdit)
         self.Tdit = (1-self.Tdit_alpha)*self.Tdit + self.Tdit_alpha*(dur_ms/self.dah_scale)
         self.elems += '-'
@@ -231,7 +233,9 @@ class Decoder(object):
 
 
 class Algomorse(object):
-  def __init__(self):
+  def __init__(self,samprate,flags=[]):
+    self.flags = flags
+    self.samprate = samprate
     # fft size must be integer number of blocks
     assert(FFTSIZE % BLOCKSIZE == 0)
     # spectral median filter size must be odd-length
@@ -240,6 +244,7 @@ class Algomorse(object):
     self.block_buf = []
     self.block_i = 0
     self.pwrs = []
+    self.peakss = []
     self.decoders = []
     self.old_decoders = []
 
@@ -247,6 +252,7 @@ class Algomorse(object):
     # block is byte array of BLOCKSIZE samples
     self.block_i += 1
     self.block_buf.append(block)
+    assert(len(block) == BLOCKSIZE)
     # do an FFT about twice per second
     if self.block_i % self.blocks_per_fft == 0:
       self.find_sigs()
@@ -258,15 +264,33 @@ class Algomorse(object):
     fft_a = np.concatenate(self.block_buf[self.block_i-self.blocks_per_fft:])
     assert(FFTSIZE == len(fft_a))
     fft_a *= np.hanning(FFTSIZE) 
+    # release old blocks
+    self.block_buf = []
+    self.block_i = 0
     # real fft
     fft_b = np.fft.rfft(fft_a)
     # compute power spectrum (in dB)
     pwr = np.log(np.square(np.real(fft_b)))*10
     # filter noise from spectrum
     pwr = median_filter(pwr,SPECTRAL_MEDIAN_FILTER)
-    self.pwrs.append(pwr)
+    ## remove filtershape from spectrum
+    #pwr_avg = exp_avg(pwr,0.005,pwr[0])
+    #pwr = pwr - pwr_avg
+    if 'pwrs' in self.flags:
+      self.pwrs.append(pwr)
     # find peaks
     peaks = prominence(pwr,PROMINENCE_THRESH)
+
+    # filter out false peaks
+    peaks2 = []
+    for peak in peaks:
+      if peak > 100 and peak < len(pwr)-100 \
+          and pwr[peak] - pwr[peak-100] > 15 and pwr[peak] - pwr[peak+100] > 15:
+        peaks2.append(peak)
+    peaks = peaks2
+
+    if 'peakss' in self.flags:
+      self.peakss.append(peaks)
     # find matching decoders, creating if need-be
     for peak in peaks:
       match = False
@@ -279,8 +303,8 @@ class Algomorse(object):
           break
       # create new decoder
       if not match:
-        print "New decoder at %d Hz"%fits2hz(peak)
-        decoder = Decoder(peak)
+        print "New decoder at %d Hz"%fits2hz(peak,self.samprate)
+        decoder = Decoder(peak,self.samprate)
         self.decoders.append((peak,decoder))
       surviving_decoders = []
       for (freq,decoder) in self.decoders:
@@ -288,8 +312,8 @@ class Algomorse(object):
           surviving_decoders.append((freq,decoder))
         else:
           # for now we keep the old decoders
-          self.old_decoders.append((freq,decoder))
-          print "Decoder timeout %d Hz"%fits2hz(freq)
+          #self.old_decoders.append((freq,decoder))
+          print "Decoder timeout %d Hz"%fits2hz(freq,self.samprate)
       self.decoders = surviving_decoders
 
     # load 
@@ -344,7 +368,7 @@ def prominence(pwr,thresh):
   return peaks
 
 if __name__ == "__main__":
-  infilename = "../websdr_recording_start_2016-08-14T11-24-45Z_14034.7kHz.wav"
+  infilename = "../cub40m.wav"
 
   inwave = wave.open(infilename,'r')
   nframes = inwave.getnframes()
@@ -362,7 +386,7 @@ if __name__ == "__main__":
   assert(nchan == 1)
   assert(sampwidth == 2)
 
-  am = Algomorse()
+  am = Algomorse(samprate,flags=['peakss','pwrs'])
 
   block_i = 0
   while True:
@@ -376,6 +400,14 @@ if __name__ == "__main__":
     if block_i > 100:
       pass #break
 
+  for i in range(len(am.pwrs)):
+    fig,ax = plt.subplots()
+    ax.plot(am.pwrs[i])
+    for j in range(len(am.peakss[i])):
+      ax.axvline(x=am.peakss[i][j])
+    plt.show() 
+  
+  """
   decoders = am.old_decoders + am.decoders
   decoders.sort() # sort by increasing frequency
 
@@ -392,6 +424,7 @@ if __name__ == "__main__":
       key_evt = decoder.key_evts[j]
       axs[i].plot([key_evt[0],key_evt[1]],[avgy/1.5,avgy*1.5],'k-',lw=3)
   plt.show()
+  """
 
   """fig,ax = plt.subplots()
   ax.imshow(data)
