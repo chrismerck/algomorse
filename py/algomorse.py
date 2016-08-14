@@ -120,7 +120,8 @@ def exp_avg(a,alpha,x0=0):
 KEY_UP = 0
 KEY_DOWN = 1
 class Decoder(object):
-  def __init__(self,freq,samprate):
+  def __init__(self,freq,samprate,flags=[]):
+    self.flags = flags
     self.samprate = samprate
     self.freq = freq
     self.prev_block = np.zeros(BLOCKSIZE)
@@ -178,7 +179,8 @@ class Decoder(object):
           #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
     self.age += BLOCKSIZE/float(self.samprate)
     self.timer += BLOCKSIZE/float(self.samprate)
-    #self.ys.append(y)
+    if 'ys' in self.flags:
+      self.ys.append(y)
     self.prev_block = block
 
   def update_freq(self,freq):
@@ -304,7 +306,7 @@ class Algomorse(object):
       # create new decoder
       if not match:
         print "New decoder at %d Hz"%fits2hz(peak,self.samprate)
-        decoder = Decoder(peak,self.samprate)
+        decoder = Decoder(peak,self.samprate,flags=self.flags)
         self.decoders.append((peak,decoder))
       surviving_decoders = []
       for (freq,decoder) in self.decoders:
@@ -312,7 +314,8 @@ class Algomorse(object):
           surviving_decoders.append((freq,decoder))
         else:
           # for now we keep the old decoders
-          #self.old_decoders.append((freq,decoder))
+          if 'old_decoders' in self.flags:
+            self.old_decoders.append((freq,decoder))
           print "Decoder timeout %d Hz"%fits2hz(freq,self.samprate)
       self.decoders = surviving_decoders
 
@@ -386,7 +389,7 @@ if __name__ == "__main__":
   assert(nchan == 1)
   assert(sampwidth == 2)
 
-  am = Algomorse(samprate,flags=['peakss','pwrs'])
+  am = Algomorse(samprate,flags=['peakss','pwrs','old_decoders','ys'])
 
   block_i = 0
   while True:
@@ -400,14 +403,15 @@ if __name__ == "__main__":
     if block_i > 100:
       pass #break
 
+  """
   for i in range(len(am.pwrs)):
     fig,ax = plt.subplots()
     ax.plot(am.pwrs[i])
     for j in range(len(am.peakss[i])):
       ax.axvline(x=am.peakss[i][j])
     plt.show() 
-  
   """
+  
   decoders = am.old_decoders + am.decoders
   decoders.sort() # sort by increasing frequency
 
@@ -424,7 +428,6 @@ if __name__ == "__main__":
       key_evt = decoder.key_evts[j]
       axs[i].plot([key_evt[0],key_evt[1]],[avgy/1.5,avgy*1.5],'k-',lw=3)
   plt.show()
-  """
 
   """fig,ax = plt.subplots()
   ax.imshow(data)
