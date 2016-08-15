@@ -20,8 +20,8 @@ DECODER_TIMEOUT_S = 2
 RECTIFY_HZ = 40 
 # adjustment for fading
 THRESHOLD_AVG_HZ = 1.0
-MIN_THRESH = 0.01 # unknown units
-MIN_DIT_MS = 30
+#MIN_THRESH = 0.01 # unknown units
+MIN_DIT_MS = 20
 MIN_DAH_SCALE = 2
 MAX_DAH_SCALE = 5
 
@@ -130,7 +130,7 @@ class Decoder(object):
     self.age = 0
     self.timer = 0
     self.thresh = 0
-    self.hist = 0.5 # as fraction of thresh
+    self.hist = 0.7 # as fraction of thresh
     self.key_evts = []
     self.key_down_time = 0
     self.key_up_time = 0
@@ -139,9 +139,11 @@ class Decoder(object):
     self.Tdit = 60.0 # ms
     self.dah_scale = 2
     self.Tdit_alpha = 0.5
+    self.elems_log = ""
     self.elems = ""
     self.text = ""
     self.last_t_up = 0
+    self.last_evt_thresh = 0
 
   def input_block(self,block):
     # stuff previous block behind this one
@@ -166,7 +168,7 @@ class Decoder(object):
     for i in range(len(y)):
       # threshold is slow exponential average
       self.thresh = (1-alpha) * self.thresh + alpha * y[i]
-      self.thresh = max(MIN_THRESH, self.thresh)
+      #self.thresh = max(MIN_THRESH, self.thresh)
       if self.state == KEY_UP:
         if y[i] > self.thresh:
           self.key_down_time = self.age + i/float(decimated_samprate)
@@ -179,13 +181,13 @@ class Decoder(object):
             # dit too short
             pass
           else:
-            self.key_evts.append((self.key_down_time,self.key_up_time))
+            self.key_evts.append((self.key_down_time,self.key_up_time,self.thresh))
             self.decode_machine()
             #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
     self.age += BLOCKSIZE/float(self.samprate)
     self.timer += BLOCKSIZE/float(self.samprate)
     if 'ys' in self.flags:
-      self.ys.append(y_sav)
+      self.ys.append(y)
     self.prev_block = block
 
   def update_freq(self,freq):
@@ -196,6 +198,12 @@ class Decoder(object):
     decimated_samprate = self.samprate/10.0
     for i in range(self.next_evt,len(self.key_evts)):
       e = self.key_evts[i]
+      this_evt_thresh = e[2]
+      # force word separation if a much stronger signal comes in
+      if this_evt_thresh > 3*self.last_evt_thresh:
+        self.elems = ''
+        self.text += '|'
+      self.last_evt_thresh = this_evt_thresh
       dur_ms = (e[1] - e[0])*1000.0
       gap_ms = (e[0] - self.last_t_up)*1000.0
       self.last_t_up = e[1]
@@ -217,11 +225,14 @@ class Decoder(object):
           # unknown letter (probably noise)
           #print "ERROR: unknown letter: ",self.elems
           self.text += '_'
+          self.elems_log += '%s '%self.elems
         else:
           self.text += morse[self.elems]
+          self.elems_log += '(%s) '%self.elems
         self.elems = ''
       if eow:
         self.text += ' '
+        self.elems_log += '|'
         print "[%d] %s"%(fits2hz(self.freq,self.samprate),self.text)
 
       # determine dit or dah
@@ -233,7 +244,7 @@ class Decoder(object):
       else:
         # recognized a dah
         #print "DAH dur_ms=%f Tdit=%f"%(dur_ms,self.Tdit)
-        self.dah_scale = (1-self.Tdit_alpha)*self.dah_scale + self.Tdit_alpha*(dur_ms/self.Tdit)
+        #self.dah_scale = (1-self.Tdit_alpha)*self.dah_scale + self.Tdit_alpha*(dur_ms/self.Tdit)
         self.Tdit = (1-self.Tdit_alpha)*self.Tdit + self.Tdit_alpha*(dur_ms/self.dah_scale)
         self.elems += '-'
     self.next_evt = len(self.key_evts)
@@ -380,7 +391,7 @@ def prominence(pwr,thresh):
   return peaks
 
 if __name__ == "__main__":
-  infilename = "../cub40m.wav"
+  infilename = "../cub40m3.wav"
 
   inwave = wave.open(infilename,'r')
   nframes = inwave.getnframes()
@@ -429,13 +440,15 @@ if __name__ == "__main__":
     axs = [axs]
   for i in range(len(decoders)):
     freq,decoder = decoders[i]
-    print decoder.text
+    print "[%d] %s"%(decoder.freq,decoder.text)
+    print "[%d] %s"%(decoder.freq,decoder.elems_log)
     y = np.concatenate(decoder.ys)
     axs[i].plot(np.arange(len(y))/(samprate/10.0), y)
     avgy = np.mean(y)
     for j in range(len(decoder.key_evts)):
       key_evt = decoder.key_evts[j]
       axs[i].plot([key_evt[0],key_evt[1]],[avgy/1.5,avgy*1.5],'k-',lw=3)
+      axs[i].set_ylabel("[%d]"%decoder.freq)
   plt.show()
 
   """fig,ax = plt.subplots()
