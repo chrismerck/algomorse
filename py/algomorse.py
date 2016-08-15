@@ -21,7 +21,7 @@ RECTIFY_HZ = 40
 # adjustment for fading
 THRESHOLD_AVG_HZ = 1.0
 MIN_THRESH = 0.01 # unknown units
-MIN_DIT_MS = 20
+MIN_DIT_MS = 30
 MIN_DAH_SCALE = 2
 MAX_DAH_SCALE = 5
 
@@ -137,7 +137,7 @@ class Decoder(object):
     self.state = KEY_UP
     self.next_evt = 0 # next event to be decoded
     self.Tdit = 60.0 # ms
-    self.dah_scale = 3.0
+    self.dah_scale = 2
     self.Tdit_alpha = 0.5
     self.elems = ""
     self.text = ""
@@ -151,6 +151,7 @@ class Decoder(object):
     lowcut = self.freq - CW_FILTER/2
     highcut = self.freq + CW_FILTER/2
     y = butter_bandpass_filter(x, lowcut, highcut, FFTSIZE, order=3)
+    y_sav = y[len(y)/2:][::10]
     # rectify and smooth signal
     alpha = 1-np.exp(-2*np.pi*RECTIFY_HZ/float(self.samprate))
     y = exp_avg(np.abs(y),alpha)
@@ -174,13 +175,17 @@ class Decoder(object):
         if y[i] < self.thresh * self.hist:
           self.key_up_time = self.age + i/float(decimated_samprate)
           self.state = KEY_UP
-          self.key_evts.append((self.key_down_time,self.key_up_time))
-          self.decode_machine()
-          #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
+          if (self.key_up_time - self.key_down_time)*1000.0 < MIN_DIT_MS:
+            # dit too short
+            pass
+          else:
+            self.key_evts.append((self.key_down_time,self.key_up_time))
+            self.decode_machine()
+            #print "[%d] Key Event: (%f,%f)"%(self.freq,self.key_down_time,self.key_up_time)
     self.age += BLOCKSIZE/float(self.samprate)
     self.timer += BLOCKSIZE/float(self.samprate)
     if 'ys' in self.flags:
-      self.ys.append(y)
+      self.ys.append(y_sav)
     self.prev_block = block
 
   def update_freq(self,freq):
@@ -200,7 +205,7 @@ class Decoder(object):
       if gap_ms < (self.Tdit * (1 + self.dah_scale))/2.0:
         # element space
         pass
-      elif gap_ms < (self.Tdit * (4 + 1*self.dah_scale))/2.0:
+      elif gap_ms < (self.Tdit * (5.5 + 1.5*self.dah_scale))/2.0:
         # letter space
         eol = True
       else:
@@ -266,9 +271,9 @@ class Algomorse(object):
     fft_a = np.concatenate(self.block_buf[self.block_i-self.blocks_per_fft:])
     assert(FFTSIZE == len(fft_a))
     fft_a *= np.hanning(FFTSIZE) 
-    # release old blocks
-    self.block_buf = []
-    self.block_i = 0
+    # release blocks once they are two FFT periods old
+    self.block_buf = self.block_buf[-self.blocks_per_fft:]
+    self.block_i = len(self.block_buf)
     # real fft
     fft_b = np.fft.rfft(fft_a)
     # compute power spectrum (in dB)
@@ -307,6 +312,10 @@ class Algomorse(object):
       if not match:
         print "New decoder at %d Hz"%fits2hz(peak,self.samprate)
         decoder = Decoder(peak,self.samprate,flags=self.flags)
+        # shove the previous blocks into the decoder,
+        #  so it can see the onset of the signal
+        for block in self.block_buf:
+          decoder.input_block(block)
         self.decoders.append((peak,decoder))
       surviving_decoders = []
       for (freq,decoder) in self.decoders:
