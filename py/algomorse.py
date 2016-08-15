@@ -14,14 +14,14 @@ SPECTRAL_MEDIAN_FILTER = 51
 PROMINENCE_THRESH = 20 # in dB
 CW_FILTER = 200 # filter width
 ALLOWED_DRIFT = 100
-DECODER_TIMEOUT_S = 2
+DECODER_TIMEOUT_S = 5
 
 # Amount of Smoothing to Apply before Element Detection
-RECTIFY_HZ = 40 
+RECTIFY_HZ = 40
 # adjustment for fading
-THRESHOLD_AVG_HZ = 1.0
+THRESHOLD_AVG_HZ = 0.8
 #MIN_THRESH = 0.01 # unknown units
-MIN_DIT_MS = 20
+MIN_DIT_MS = 24
 MIN_DAH_SCALE = 2
 MAX_DAH_SCALE = 5
 
@@ -120,7 +120,8 @@ def exp_avg(a,alpha,x0=0):
 KEY_UP = 0
 KEY_DOWN = 1
 class Decoder(object):
-  def __init__(self,freq,samprate,flags=[]):
+  def __init__(self,freq,samprate,text_cb=lambda x: x,flags=[]):
+    self.text_cb = text_cb
     self.flags = flags
     self.samprate = samprate
     self.freq = freq
@@ -130,7 +131,7 @@ class Decoder(object):
     self.age = 0
     self.timer = 0
     self.thresh = 0
-    self.hist = 0.7 # as fraction of thresh
+    self.hist = 0.6 # as fraction of thresh
     self.key_evts = []
     self.key_down_time = 0
     self.key_up_time = 0
@@ -193,6 +194,8 @@ class Decoder(object):
   def update_freq(self,freq):
     self.timer = 0
     self.freq = freq
+    hz = fits2hz(freq,self.samprate)
+    self.text_cb({'evt':'update_hz','id':id(self),'hz':hz})
 
   def decode_machine(self):
     decimated_samprate = self.samprate/10.0
@@ -226,13 +229,16 @@ class Decoder(object):
           #print "ERROR: unknown letter: ",self.elems
           self.text += '_'
           self.elems_log += '%s '%self.elems
+          self.text_cb({'evt':'decoder_output','id':id(self),'text':'_'})
         else:
           self.text += morse[self.elems]
           self.elems_log += '(%s) '%self.elems
+          self.text_cb({'evt':'decoder_output','id':id(self),'text':morse[self.elems]})
         self.elems = ''
       if eow:
         self.text += ' '
         self.elems_log += '|'
+        self.text_cb({'evt':'decoder_output','id':id(self),'text':' '})
         print "[%d] %s"%(fits2hz(self.freq,self.samprate),self.text)
 
       # determine dit or dah
@@ -251,7 +257,7 @@ class Decoder(object):
 
 
 class Algomorse(object):
-  def __init__(self,samprate,flags=[]):
+  def __init__(self,samprate,text_cb=lambda x: x,flags=[]):
     self.flags = flags
     self.samprate = samprate
     # fft size must be integer number of blocks
@@ -265,6 +271,7 @@ class Algomorse(object):
     self.peakss = []
     self.decoders = []
     self.old_decoders = []
+    self.text_cb = text_cb
 
   def input_block(self,block):
     # block is byte array of BLOCKSIZE samples
@@ -321,8 +328,10 @@ class Algomorse(object):
           break
       # create new decoder
       if not match:
-        print "New decoder at %d Hz"%fits2hz(peak,self.samprate)
-        decoder = Decoder(peak,self.samprate,flags=self.flags)
+        hz = fits2hz(peak,self.samprate)
+        print "New decoder at %d Hz"%hz
+        decoder = Decoder(peak,self.samprate,text_cb=self.text_cb,flags=self.flags)
+        self.text_cb({'evt':'new_decoder','id':id(decoder),'hz':hz})
         # shove the previous blocks into the decoder,
         #  so it can see the onset of the signal
         for block in self.block_buf:
@@ -336,6 +345,7 @@ class Algomorse(object):
           # for now we keep the old decoders
           if 'old_decoders' in self.flags:
             self.old_decoders.append((freq,decoder))
+          self.text_cb({'evt':'decoder_timeout','id':id(decoder)})
           print "Decoder timeout %d Hz"%fits2hz(freq,self.samprate)
       self.decoders = surviving_decoders
 
